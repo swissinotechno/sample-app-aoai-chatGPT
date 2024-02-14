@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useMemo, useState, useContext } from "react";
 import { useBoolean } from "@fluentui/react-hooks"
 import { Checkbox, DefaultButton, Dialog, FontIcon, Stack, Text } from "@fluentui/react";
+import DOMPurify from 'dompurify';
 import { AppStateContext } from '../../state/AppProvider';
 
 import styles from "./Answer.module.css";
@@ -12,6 +13,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import supersub from 'remark-supersub'
 import { ThumbDislike20Filled, ThumbLike20Filled } from "@fluentui/react-icons";
+import { XSSAllowTags } from "../../constants/xssAllowTags";
 
 interface Props {
     answer: AskResponse;
@@ -25,6 +27,7 @@ export const Answer = ({
     const initializeAnswerFeedback = (answer: AskResponse) => {
         if (answer.message_id == undefined) return undefined;
         if (answer.feedback == undefined) return undefined;
+        if (answer.feedback.split(",").length > 1) return Feedback.Negative;
         if (Object.values(Feedback).includes(answer.feedback)) return answer.feedback;
         return Feedback.Neutral;
     }
@@ -39,7 +42,7 @@ export const Answer = ({
     const [showReportInappropriateFeedback, setShowReportInappropriateFeedback] = useState(false);
     const [negativeFeedbackList, setNegativeFeedbackList] = useState<Feedback[]>([]);
     const appStateContext = useContext(AppStateContext)
-    const FEEDBACK_ENABLED = appStateContext?.state.frontendSettings?.feedback_enabled; 
+    const FEEDBACK_ENABLED = appStateContext?.state.frontendSettings?.feedback_enabled && appStateContext?.state.isCosmosDBAvailable?.cosmosDB; 
     
     const handleChevronClick = () => {
         setChevronIsExpanded(!chevronIsExpanded);
@@ -183,7 +186,7 @@ export const Answer = ({
                             <ReactMarkdown
                                 linkTarget="_blank"
                                 remarkPlugins={[remarkGfm, supersub]}
-                                children={parsedAnswer.markdownFormatText}
+                                children={DOMPurify.sanitize(parsedAnswer.markdownFormatText, {ALLOWED_TAGS: XSSAllowTags})}
                                 className={styles.answerText}
                             />
                         </Stack.Item>

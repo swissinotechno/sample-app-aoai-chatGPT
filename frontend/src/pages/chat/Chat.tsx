@@ -7,9 +7,11 @@ import remarkGfm from 'remark-gfm'
 import rehypeRaw from "rehype-raw";
 import uuid from 'react-uuid';
 import { isEmpty } from "lodash-es";
+import DOMPurify from 'dompurify';
 
 import styles from "./Chat.module.css";
 import Contoso from "../../assets/Contoso.svg";
+import { XSSAllowTags } from "../../constants/xssAllowTags";
 
 import {
     ChatMessage,
@@ -41,6 +43,7 @@ const enum messageStatus {
 
 const Chat = () => {
     const appStateContext = useContext(AppStateContext)
+    const ui = appStateContext?.state.frontendSettings?.ui;
     const AUTH_ENABLED = appStateContext?.state.frontendSettings?.auth_enabled;
     const chatMessageStreamEnd = useRef<HTMLDivElement | null>(null);
     const [isLoading, setIsLoading] = useState<boolean>(false);
@@ -72,7 +75,10 @@ const Chat = () => {
     const [ASSISTANT, TOOL, ERROR] = ["assistant", "tool", "error"]
 
     useEffect(() => {
-        if (appStateContext?.state.isCosmosDBAvailable?.status === CosmosDBStatus.NotWorking && appStateContext.state.chatHistoryLoadingState === ChatHistoryLoadingState.Fail && hideErrorDialog) {
+        if (appStateContext?.state.isCosmosDBAvailable?.status !== CosmosDBStatus.Working  
+            && appStateContext?.state.isCosmosDBAvailable?.status !== CosmosDBStatus.NotConfigured
+            && appStateContext?.state.chatHistoryLoadingState === ChatHistoryLoadingState.Fail 
+            && hideErrorDialog) {
             let subtitle = `${appStateContext.state.isCosmosDBAvailable.status}. Please contact the site administrator.`
             setErrorMsg({
                 title: "Chat history is not enabled",
@@ -116,6 +122,15 @@ const Chat = () => {
             assistantContent += resultMessage.content
             assistantMessage = resultMessage
             assistantMessage.content = assistantContent
+
+            if (resultMessage.context) {
+                toolMessage = {
+                    id: uuid(),
+                    role: TOOL,
+                    content: resultMessage.context,
+                    date: new Date().toISOString(),
+                }
+            }
         }
 
         if (resultMessage.role === TOOL) toolMessage = resultMessage
@@ -177,8 +192,8 @@ const Chat = () => {
             const response = await conversationApi(request, abortController.signal);
             if (response?.body) {
                 const reader = response.body.getReader();
-                let runningText = "";
 
+                let runningText = "";
                 while (true) {
                     setProcessMessages(messageStatus.Processing)
                     const { done, value } = await reader.read();
@@ -188,19 +203,33 @@ const Chat = () => {
                     const objects = text.split("\n");
                     objects.forEach((obj) => {
                         try {
-                            runningText += obj;
-                            result = JSON.parse(runningText);
-                            result.choices[0].messages.forEach((obj) => {
-                                obj.id = result.id;
-                                obj.date = new Date().toISOString();
-                            })
-                            setShowLoadingMessage(false);
-                            result.choices[0].messages.forEach((resultObj) => {
-                                processResultMessage(resultObj, userMessage, conversationId);
-                            })
-                            runningText = "";
+                            if (obj !== "" && obj !== "{}") {
+                                runningText += obj;
+                                result = JSON.parse(runningText);
+                                if (result.choices?.length > 0) {
+                                    result.choices[0].messages.forEach((msg) => {
+                                        msg.id = result.id;
+                                        msg.date = new Date().toISOString();
+                                    })
+                                    setShowLoadingMessage(false);
+                                    result.choices[0].messages.forEach((resultObj) => {
+                                        processResultMessage(resultObj, userMessage, conversationId);
+                                    })
+                                }
+                                else if (result.error) {
+                                    throw Error(result.error);
+                                }
+                                runningText = "";
+                            }
                         }
-                        catch { }
+                        catch (e) {
+                            if (!(e instanceof SyntaxError)) {
+                                console.error(e);
+                                throw e;
+                            } else {
+                                console.log("Incomplete message. Continuing...")
+                            }
+                        }
                     });
                 }
                 conversation.messages.push(toolMessage, assistantMessage)
@@ -279,10 +308,12 @@ const Chat = () => {
         try {
             const response = conversationId ? await historyGenerate(request, abortController.signal, conversationId) : await historyGenerate(request, abortController.signal);
             if (!response?.ok) {
+                const responseJson = await response.json();
+                var errorResponseMessage = responseJson.error === undefined ? "Please try again. If the problem persists, please contact the site administrator." : responseJson.error;
                 let errorChatMsg: ChatMessage = {
                     id: uuid(),
                     role: ERROR,
-                    content: "There was an error generating a response. Chat history can't be saved at this time. If the problem persists, please contact the site administrator.",
+                    content: `There was an error generating a response. Chat history can't be saved at this time. ${errorResponseMessage}`,
                     date: new Date().toISOString()
                 }
                 let resultConversation;
@@ -309,8 +340,8 @@ const Chat = () => {
             }
             if (response?.body) {
                 const reader = response.body.getReader();
-                let runningText = "";
 
+                let runningText = "";
                 while (true) {
                     setProcessMessages(messageStatus.Processing)
                     const { done, value } = await reader.read();
@@ -320,19 +351,33 @@ const Chat = () => {
                     const objects = text.split("\n");
                     objects.forEach((obj) => {
                         try {
-                            runningText += obj;
-                            result = JSON.parse(runningText);
-                            result.choices[0].messages.forEach((obj) => {
-                                obj.id = result.id;
-                                obj.date = new Date().toISOString();
-                            })
-                            setShowLoadingMessage(false);
-                            result.choices[0].messages.forEach((resultObj) => {
-                                processResultMessage(resultObj, userMessage, conversationId);
-                            })
-                            runningText = "";
+                            if (obj !== "" && obj !== "{}") {
+                                runningText += obj;
+                                result = JSON.parse(runningText);
+                                if (result.choices?.length > 0) {
+                                    result.choices[0].messages.forEach((msg) => {
+                                        msg.id = result.id;
+                                        msg.date = new Date().toISOString();
+                                    })
+                                    setShowLoadingMessage(false);
+                                    result.choices[0].messages.forEach((resultObj) => {
+                                        processResultMessage(resultObj, userMessage, conversationId);
+                                    })
+                                }
+                                runningText = "";
+                            }
+                            else if (result.error) {
+                                throw Error(result.error);
+                            }
                         }
-                        catch { }
+                        catch (e) {
+                            if (!(e instanceof SyntaxError)) {
+                                console.error(e);
+                                throw e;
+                            } else {
+                                console.log("Incomplete message. Continuing...")
+                            }
+                         }
                     });
                 }
 
@@ -374,7 +419,7 @@ const Chat = () => {
 
         } catch (e) {
             if (!abortController.signal.aborted) {
-                let errorMessage = "An error occurred. Please try again. If the problem persists, please contact the site administrator.";
+                let errorMessage = `An error occurred. ${errorResponseMessage}`;
                 if (result.error?.message) {
                     errorMessage = result.error.message;
                 }
@@ -401,6 +446,14 @@ const Chat = () => {
                 } else {
                     if (!result.history_metadata) {
                         console.error("Error retrieving data.", result);
+                        console.log("errorMessage", errorMessage)
+                        let errorChatMsg: ChatMessage = {
+                            id: uuid(),
+                            role: ERROR,
+                            content: errorMessage,
+                            date: new Date().toISOString()
+                        } 
+                        setMessages([...messages, userMessage, errorChatMsg])
                         setIsLoading(false);
                         setShowLoadingMessage(false);
                         abortFuncs.current = abortFuncs.current.filter(a => a !== abortController);
@@ -586,12 +639,12 @@ const Chat = () => {
                         {!messages || messages.length < 1 ? (
                             <Stack className={styles.chatEmptyState}>
                                 <img
-                                    src={Contoso}
+                                    src={ui?.chat_logo ? ui.chat_logo : Contoso}
                                     className={styles.chatIcon}
                                     aria-hidden="true"
                                 />
-                                <h1 className={styles.chatEmptyStateTitle}>Start chatting</h1>
-                                <h2 className={styles.chatEmptyStateSubtitle}>This chatbot is configured to answer your questions</h2>
+                                <h1 className={styles.chatEmptyStateTitle}>{ui?.chat_title}</h1>
+                                <h2 className={styles.chatEmptyStateSubtitle}>{ui?.chat_description}</h2>
                             </Stack>
                         ) : (
                             <div className={styles.chatMessageStream} style={{ marginBottom: isLoading ? "40px" : "0px" }} role="log">
@@ -732,7 +785,7 @@ const Chat = () => {
                                 <ReactMarkdown
                                     linkTarget="_blank"
                                     className={styles.citationPanelContent}
-                                    children={activeCitation.content}
+                                    children={DOMPurify.sanitize(activeCitation.content, {ALLOWED_TAGS: XSSAllowTags})}
                                     remarkPlugins={[remarkGfm]}
                                     rehypePlugins={[rehypeRaw]}
                                 />
